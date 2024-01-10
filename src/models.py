@@ -6,30 +6,36 @@ from torch.nn import functional as F
 
 import pytorch_lightning as pl
 from torchmetrics import Accuracy
-from transformers import (
-    GPT2Config, GPT2ForTokenClassification,
-    BertConfig, EncoderDecoderConfig, EncoderDecoderModel
-)
+from transformers import GPT2Config, GPT2ForTokenClassification
 
-from pl_base import LightningBase
-from typing import Dict, OrderedDict, Optional, Tuple
+from typing import OrderedDict, Optional, Tuple
 
-class ClassificationBase(LightningBase):
-    """Lightning class for classification task"""
+class LightningBase(pl.LightningModule):
     
     loss = nn.CrossEntropyLoss()
     
     def __init__(
-        self,
-        num_classes: Optional[int] = 10,
-        input_size: Optional[int] = 28*28,
-        *args, **kwargs,
+        self, *args,
+        optimizer=optim.SGD,
+        optimizer_kwargs=dict(lr=0.1),
+        scheduler=None,
+        scheduler_kwargs=dict(),
+        num_classes=10,
+        input_size=28*28,
+        **kwargs
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__()
+        # self.save_hyperparameters()
         self.num_classes = num_classes
         self.input_size = input_size
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.optimizer_kwargs = optimizer_kwargs
+        self.scheduler_kwargs = scheduler_kwargs
+        
+        self.best_valid_acc = 0
     
-    def step(self, batch, batch_idx, subset="train", **log_params):
+    def step(self, batch, batch_idx, subset="train", logger=True, **log_params):
         scorer = Accuracy("multiclass", num_classes=self.num_classes).to(self.device)
         image, label = batch
         
@@ -38,32 +44,62 @@ class ClassificationBase(LightningBase):
         accuracy = scorer(pred, label)
         
         res = {"loss": loss, "accuracy": accuracy}
-        if subset != "predict":
+        if logger:
             self.log(f"{subset}_loss", loss, **log_params)
             self.log(f"{subset}_accuracy", accuracy, **log_params)
-        else:
+        if subset == "predict":
             res["pred"] = pred
             res["true"] = label
         return res
+        
+    def training_step(self, batch, batch_idx):
+        return self.step(
+            batch, batch_idx, "train",
+            on_step=False, on_epoch=True,
+            prog_bar=True, logger=True
+        )
+    
+    def validation_step(self, batch, batch_idx):
+        return self.step(
+            batch, batch_idx, "valid",
+            on_step=False, on_epoch=True,
+            prog_bar=True, logger=True
+        )
+    
+    def test_step(self, batch, batch_idx):
+        return self.step(
+            batch, batch_idx, "test",
+            on_step=False, on_epoch=True,
+            prog_bar=True, logger=True,
+        )
+    
+    def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        return self.step(batch, batch_idx, "predict", logger=False)
 
-
-class MLP(ClassificationBase):
-    """
-    Custom multilayer perceptron for classification.
-    Args:
-        n_layers: total number of layers, including (n-1) hidden and 1 out
-        hid_size: number of params in hidden_layers
-        use_batch_norm: use BatchNorm1d or not. Classic implementation does not
-    """
+    def configure_optimizers(self):
+        config = {}
+        optimizer = self.optimizer(
+            self.parameters(), **self.optimizer_kwargs
+        )
+        config["optimizer"] = optimizer
+        
+        if self.scheduler is not None:
+            scheduler = self.scheduler(
+                optimizer, **self.scheduler_kwargs
+            )
+            config["lr_scheduler"] = scheduler
+            
+        return config
+    
+    
+class MLP(LightningBase):
     
     def __init__(
-        self,
-        n_layers=3,
-        hid_size=256,
-        use_batch_norm=True,
-        *args, **kwargs,
+        self, *args, use_batch_norm=True,
+        hid_size=256, n_layers=3, **kwargs
     ):
         super().__init__(*args, **kwargs)
+        # self.save_hyperparameters()
         linear_layers = []
         for i in range(n_layers):
             in_size = self.input_size if i == 0 else hid_size
@@ -81,17 +117,15 @@ class MLP(ClassificationBase):
         return self.mlp(*args, **kwargs)
     
     
-class LSTM(ClassificationBase):
-    """Default LSTM implementation for classification."""
+class LSTM(LightningBase):
     
     def __init__(
-        self,
-        input_size=794,
-        hidden_size=256,
+        self, *args,
+        input_size=794, hidden_size=256,
         num_layers=1,
         batch_first=True,
         bidirectional=False,
-        *args, **kwargs,
+        **kwargs
     ):
         super().__init__(*args, **kwargs)
         self.lstm = nn.LSTM(input_size, hidden_size,
@@ -101,20 +135,17 @@ class LSTM(ClassificationBase):
         
     def forward(self, inputs):
         return self.linear(self.lstm(inputs)[0]).transpose(-2, -1)
-        
-LSTM.__doc__ += "\n"+nn.LSTM.__doc__
-
-class OPLSTM(ClassificationBase):
-    """Attempt at recreating outer-product LSTM from L. Kirsch paper"""
+    
+    
+class OPLSTM(LightningBase):
     
     def __init__(
-        self,
+        self, *args,
         input_size=794,
         hidden_size=256,
         batch_first=True,
         bidirectional=False,
-        num_layers=1,
-        *args, **kwargs,
+        num_layers=1, **kwargs
     ):
         super().__init__(*args, **kwargs)
         self.num_layers = num_layers
@@ -165,22 +196,10 @@ class OPLSTM(ClassificationBase):
         )
         return f"OPLSTM(\n    {repr_str}\n)"
 
-OPLSTM.__doc__ += "\n"+nn.LSTM.__doc__
 
-class GPT(ClassificationBase):
-    """
-    Decoder architecture adapted from transformers.
-    Accepts images concatenated with labels as input.
-    Args:
-        config: GPT2Config from transformers
-        input_size: input_size for embedding projection
-    """
-    def __init__(
-        self,
-        config: GPT2Config = None,
-        input_size: int = 28*28+10,
-        *args, **kwargs,
-    ):
+class Transformer(LightningBase):
+    
+    def __init__(self, config=None, input_size=28*28+10, *args, **kwargs):
         if config is None:
             config = GPT2Config(
                 num_labels=10, hidden_size=32, n_inner=1024,
@@ -210,7 +229,7 @@ class GPT(ClassificationBase):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        *args, **kwargs,
+        **kwargs,
     ):
         attn_output = self.backbone(
             input_ids=None,
@@ -227,80 +246,3 @@ class GPT(ClassificationBase):
             return_dict=return_dict,
         )
         return attn_output[0].transpose(-2, -1)
-
-GPT.forward.__doc__ = GPT2ForTokenClassification.forward.__doc__
-
-    
-class Transformer(ClassificationBase):
-    """
-    Encoder-decoder architecture adapted from transformers.
-    Accepts images as encoder input and class labels as decoder input.
-    Args:
-        config: BertConfig from transformers
-        input_size: input_size for image embedding projection
-    """    
-    def __init__(
-        self,
-        config: BertConfig = None,
-        input_size: int = 28*28,
-        *args, **kwargs,
-    ):
-        if config is None:
-            config = BertConfig(
-            vocab_size=10,
-            hidden_size=32,
-            intermediate_size=1024,
-            num_hidden_layers=4,
-            num_attention_heads=8,
-            n_positions=100,
-        )
-        super().__init__(*args, **kwargs)
-        enc_dec_config = EncoderDecoderConfig.from_encoder_decoder_configs(config, config)
-        self.input_size = input_size
-        self.backbone = EncoderDecoderModel(config=enc_dec_config)
-        self.config = config
-        self.projection = nn.Sequential(
-            nn.Linear(self.input_size, self.config.hidden_size),
-            nn.LayerNorm(self.config.hidden_size),
-            nn.Dropout(p=self.config.hidden_dropout_prob)
-        )
-        
-    def forward(
-        self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.FloatTensor] = None,
-        decoder_input_ids: Optional[torch.LongTensor] = None,
-        decoder_attention_mask: Optional[torch.BoolTensor] = None,
-        encoder_outputs: Optional[Tuple[torch.FloatTensor]] = None,
-        past_key_values: Tuple[Tuple[torch.FloatTensor]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-        **kwargs,
-    ):
-        targets = input_ids[:, :, -10:].argmax(-1)
-        images = input_ids[:, :, :-10]
-        inputs_embeds = self.projection(images)
-        attn_output = self.backbone(
-            input_ids=None,
-            attention_mask=attention_mask,
-            decoder_input_ids=targets,
-            decoder_attention_mask=decoder_attention_mask,
-            encoder_outputs=encoder_outputs,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            decoder_inputs_embeds=decoder_inputs_embeds,
-            labels=labels,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-            **kwargs,
-        )
-        return attn_output[0].transpose(-2, -1)
-
-Transformer.forward.__doc__ = EncoderDecoderModel.forward.__doc__
