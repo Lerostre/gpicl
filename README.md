@@ -32,15 +32,22 @@ General Purpise In Context Learning](https://arxiv.org/pdf/2212.04458.pdf). В �
 
 Обучать всё будем на аугментированном MNIST с числом тасок $2^{16}$. В статье результаты куда более внушительные, но самое главное у нас тоже видно.
 
-Здесь показатели из статьи:
-
-<img src="src/table_ref.png">
+Показатели в статье по части моделей были следующие:
+$$
+\begin{array}{lllc}
+\hline \text{**Method / Dataset** } & \text{**MNIST**} & \text{**Fashion MNIST** }  & \text{**KMNIST** } & \text{**CIFAR10** } & \text{**SVHN** }\\
+\hline \text {SGD} & \text{0.7031} & \text{0.5078}  & \text{0.3789} & \text{0.1484} & \text{0.1016} \\
+\text {LSTM (outer-product)} & \text{0.2539} & \text{0.2812}  & \text{0.1810} & \text{0.1211} & \text{0.1107} \\
+\text {GPICL Transformer} & \text{0.7370} & \text{0.6224}  & \text{0.5339} & \text{0.1940} & \text{0.1458} \\
+\hline
+\end{array}
+$$
 
 А здесь то, что получилось у нас:
 
 $$
 \begin{array}{lllc}
-\hline \boldsymbol{Method / Dataset } & \boldsymbol{MNIST} & \boldsymbol{Fashion MNIST }  & \boldsymbol{KMNIST } & \boldsymbol{CIFAR10 } & \boldsymbol{SVHN }\\
+\hline \text{**Method / Dataset** } & \text{**MNIST**} & \text{**Fashion MNIST** }  & \text{**KMNIST** } & \text{**CIFAR10** } & \text{**SVHN** }\\
 \hline \text {MLP} & \text{0.370968} & \text{0.225806}  & \text{0.096774} & \text{0.081967} & \text{0.049180} \\
 \text {LSTM} & \text{0.109375} & \text{0.095052}  & \text{0.098958} & \text{0.104167} & \text{0.102865} \\
 \text {GPT (GPICL)} & \text{0.523438} & \text{0.458333}  & \text{0.350260} & \text{0.114583} & \text{0.088542} \\
